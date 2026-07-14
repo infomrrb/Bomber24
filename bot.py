@@ -11,20 +11,29 @@ from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemo
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from dotenv import load_dotenv
 
-load_dotenv()  # .env ফাইল থেকে ভেরিয়েবল লোড
-
-# ================== কনফিগারেশন (এনভায়রনমেন্ট থেকে) ==================
+# ================== কনফিগারেশন (সব এনভায়রনমেন্ট থেকে) ==================
 BOT_TOKEN = os.getenv("8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0")
-ADMIN_ID = int(os.getenv("1967494059", 0))
+ADMIN_ID = 1967494059
 ADMIN_USERNAME = os.getenv("@RobiEntertainment", "@Admin")
-DEV_USERNAME = os.getenv("RobiEntertainment", "Dev")
-LOG_CHANNEL = int(os.getenv("1967494059", 0))
-# =================================================
+DEV_USERNAME = RobiEntertainment", "Dev")
+LOG_CHANNEL = 1967494059
 
-if not BOT_TOKEN or ADMIN_ID == 0 or LOG_CHANNEL == 0:
-    raise ValueError("Missing required environment variables. Please set BOT_TOKEN, ADMIN_ID, LOG_CHANNEL.")
+# চেক: সব প্রয়োজনীয় ভেরিয়েবল সেট আছে কিনা
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is not set in environment variables.")
+if not ADMIN_ID:
+    raise ValueError("ADMIN_ID is not set in environment variables.")
+if not LOG_CHANNEL:
+    raise ValueError("LOG_CHANNEL is not set in environment variables.")
+
+try:
+    ADMIN_ID = int(ADMIN_ID)
+    LOG_CHANNEL = int(LOG_CHANNEL)
+except ValueError:
+    raise ValueError("ADMIN_ID and LOG_CHANNEL must be integers.")
+
+# =================================================
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
