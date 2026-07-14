@@ -13,7 +13,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================== কনফিগারেশন (সব এনভায়রনমেন্ট থেকে) ==================
-BOT_TOKEN = os.getenv("8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0")
+BOT_TOKEN = os.getenv("aiogram==3.4.1
+aiosqlite==0.19.0
+aiohttp==3.9.3")
 ADMIN_ID = 1967494059
 ADMIN_USERNAME = os.getenv("@RobiEntertainment", "@Admin")
 DEV_USERNAME = RobiEntertainment", "Dev")
