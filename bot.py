@@ -20,7 +20,7 @@ BOT_TOKEN = os.getenv("8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0")
 ADMIN_ID = int(os.getenv("1967494059", 0))
 ADMIN_USERNAME = os.getenv("@RobiEntertainment", "@Admin")
 DEV_USERNAME = os.getenv("RobiEntertainment", "Dev")
-LOG_CHANNEL = int(os.getenv("1001234567890", 0))
+LOG_CHANNEL = int(os.getenv("1967494059", 0))
 # =================================================
 
 if not BOT_TOKEN or ADMIN_ID == 0 or LOG_CHANNEL == 0:
