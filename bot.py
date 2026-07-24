@@ -6,10 +6,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKe
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # ===================== কনফিগারেশন =====================
-TOKEN = "8578238506:AAHHZpeEJAdT9iND8aal-x13PPrN-9H_miw"
+TOKEN = "8919343304:AAEmHznQk2Q2tlkxNcOgTYDkMZZ5PesoBPw"
 CHANNEL_USERNAME = "@VOTER_LIST_BANGLADESH"
 API_URL = "https://apu-sand.vercel.app/send?number="
-ADMIN_ID = 8424876811
+ADMIN_ID = 1967494059
 OWNER_USERNAME = "@DARK_TUSHAR"
 
 # ইউজার ডাটা স্টোর
