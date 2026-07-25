@@ -3,11 +3,9 @@ import logging
 import aiosqlite
 import aiohttp
 import requests
-import json
-import re
 from datetime import datetime
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # ===================== কনফিগারেশন =====================
 BOT_TOKEN = "8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0"
@@ -51,7 +49,6 @@ async def init_db():
                 PRIMARY KEY (user_id, code)
             )""")
             
-            # ডেমো রিডিম কোড
             await db.execute(
                 "INSERT OR IGNORE INTO redeem_codes (code, amount, usages) VALUES ('FREE50', 50, 100)"
             )
@@ -71,6 +68,10 @@ def get_main_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
+def get_back_keyboard():
+    keyboard = [["🔙 Back"]]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
 def get_ai_keyboard():
     keyboard = [
         ["🤖 ChatGPT", "🎨 PicWish"],
@@ -81,10 +82,6 @@ def get_ai_keyboard():
         ["🎧 Descript", "🖼 SkySnail"],
         ["🔙 Back"]
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-
-def get_back_keyboard():
-    keyboard = [["🔙 Back"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
 # ===================== স্টার্ট =====================
@@ -437,7 +434,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"📩 Message from {user_id}: {message}")
     
-    # ===== প্রধান মেনু =====
+    # ===== ব্যাক =====
+    if message == "🔙 Back":
+        await update.message.reply_text("🏠 **Main Menu**", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        context.user_data.clear()
+        return
+    
+    # ===== মেইন মেনু =====
     if message == "📨 Send SMS":
         await cmd_sms(update, context)
         return
@@ -473,12 +476,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await ai_tool_handler(update, context)
         return
     
-    # ===== ব্যাক =====
-    if message == "🔙 Back":
-        await update.message.reply_text("🏠 **Main Menu**", parse_mode="Markdown", reply_markup=get_main_keyboard())
-        context.user_data.clear()
-        return
-    
     # ===== স্টেট প্রসেস =====
     state = context.user_data.get('state')
     
@@ -509,9 +506,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def main():
     try:
         print("="*60)
-        print("🔥 ULTIMATE BOT STARTING...")
-        print(f"✅ Bot Token: {BOT_TOKEN[:15]}...")
-        print(f"👑 Admin ID: {ADMIN_ID}")
+        print("🔥 BOT STARTING...")
+        print(f"✅ Token: {BOT_TOKEN[:15]}...")
+        print(f"👑 Admin: {ADMIN_ID}")
         print("="*60)
         
         await init_db()
