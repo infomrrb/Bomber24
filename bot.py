@@ -240,7 +240,7 @@ async def sms_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data.clear()
 
-# ===================== SMS BOMBER =====================
+# ===================== SMS BOMBER (এখন কাজ করবে) =====================
 async def cmd_bomber(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💣 **SMS Bomber**\n\n"
@@ -492,4 +492,106 @@ async def redeem_process(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ===================== কন্টাক্ট =====================
 async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"📞 **Contact**
+        f"📞 **Contact**\n\n"
+        f"👨‍💻 Admin: {ADMIN_USERNAME}\n"
+        f"👨‍💻 Owner: {OWNER_USERNAME}",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
+
+# ===================== মেসেজ হ্যান্ডলার =====================
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    message = update.message.text
+    
+    logger.info(f"📩 Message from {user_id}: {message}")
+    
+    if message == "🔙 Back":
+        await update.message.reply_text("🏠 **Main Menu**", parse_mode="Markdown", reply_markup=get_main_keyboard())
+        context.user_data.clear()
+        return
+    
+    if message == "📨 Send SMS":
+        await cmd_sms(update, context)
+        return
+    
+    if message == "💣 SMS Bomber":
+        await cmd_bomber(update, context)
+        return
+    
+    if message == "👤 My Profile":
+        await profile(update, context)
+        return
+    
+    if message == "🎁 Redeem Code":
+        await redeem(update, context)
+        return
+    
+    if message == "📊 My Stats":
+        await stats(update, context)
+        return
+    
+    if message == "📞 Contact Admin":
+        await contact(update, context)
+        return
+    
+    state = context.user_data.get('state')
+    
+    if state == 'sms_number':
+        await sms_number(update, context)
+        return
+    elif state == 'sms_message':
+        await sms_message(update, context)
+        return
+    elif state == 'bomber_number':
+        await bomber_number(update, context)
+        return
+    elif state == 'bomber_amount':
+        await bomber_amount(update, context)
+        return
+    elif state == 'redeem_code':
+        await redeem_process(update, context)
+        return
+    
+    await update.message.reply_text(
+        "❌ **Please use the buttons below:**",
+        parse_mode="Markdown",
+        reply_markup=get_main_keyboard()
+    )
+
+# ===================== মেইন =====================
+async def main():
+    try:
+        print("="*60)
+        print("🔥 SMS BOMBER BOT STARTING...")
+        print(f"✅ APIs Loaded: {len(WORKING_APIS)}")
+        print(f"👑 Admin ID: {ADMIN_ID}")
+        print("="*60)
+        
+        await init_db()
+        
+        application = Application.builder().token(BOT_TOKEN).build()
+        application.add_handler(CommandHandler("start", start))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        
+        print("✅ Bot is RUNNING!")
+        print("="*60)
+        
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        logger.error(f"Main error: {e}")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n⛔ Bot stopped!")
+    except Exception as e:
+        print(f"❌ Fatal error: {e}")
