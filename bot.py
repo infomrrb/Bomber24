@@ -5,7 +5,7 @@ import aiohttp
 import json
 import random
 import ssl
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -18,6 +18,14 @@ OWNER_USERNAME = "@RobiEntertainment"
 # SMS API
 SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
 SMS_API_KEY = "Shuvo55356"
+
+# ===================== API লিমিট কনফিগারেশন =====================
+API_LIMITS = {
+    "daily_limit": 1000,
+    "per_user_limit": 50,
+    "api_call_interval": 0.5,
+    "max_retries": 3,
+}
 
 # ===================== কাজ করা API (২৭টি) =====================
 WORKING_APIS = [
@@ -42,6 +50,78 @@ WORKING_APIS = [
     {"name": "Binge.buzz", "method": "POST", "url": "https://ss.binge.buzz/otp/send/login", "body": {"mobile": "{phone}"}},
 ]
 
+# ===================== লগিং =====================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# ===================== ডাটাবেস =====================
+async def init_db():
+    try:
+        async with aiosqlite.connect("bot_database.db") as db:
+            # ইউজার টেবিল
+            await db.execute("""CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                balance INTEGER DEFAULT 10,
+                total_sms INTEGER DEFAULT 0,
+                total_bombing INTEGER DEFAULT 0,
+                join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'active'
+            )""")
+            
+            # রিডিম কোড টেবিল
+            await db.execute("""CREATE TABLE IF NOT EXISTS redeem_codes (
+                code TEXT PRIMARY KEY,
+                amount INTEGER,
+                usages INTEGER
+            )""")
+            
+            # রিডিম হিস্ট্রি
+            await db.execute("""CREATE TABLE IF NOT EXISTS redeem_history (
+                user_id INTEGER,
+                code TEXT,
+                PRIMARY KEY (user_id, code)
+            )""")
+            
+            # API ইউসেজ টেবিল
+            await db.execute("""CREATE TABLE IF NOT EXISTS api_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                api_name TEXT,
+                user_id INTEGER,
+                success INTEGER,
+                usage_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            # API স্ট্যাটস টেবিল
+            await db.execute("""CREATE TABLE IF NOT EXISTS api_stats (
+                api_name TEXT PRIMARY KEY,
+                total_calls INTEGER DEFAULT 0,
+                total_success INTEGER DEFAULT 0,
+                total_failed INTEGER DEFAULT 0,
+                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
+            # ইউজার API স্ট্যাটস
+            await db.execute("""CREATE TABLE IF NOT EXISTS user_api_stats (
+                user_id INTEGER,
+                api_name TEXT,
+                total_calls INTEGER DEFAULT 0,
+                last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (user_id, api_name)
+            )""")
+            
+            # ডেমো কোড
+            await db.execute("INSERT OR IGNORE INTO redeem_codes (code, amount, usages) VALUES ('FREE50', 50, 100)")
+            await db.execute("INSERT OR IGNORE INTO redeem_codes (code, amount, usages) VALUES ('WELCOME10', 10, 200)")
+            
+            await db.commit()
+            logger.info("✅ Database initialized")
+    except Exception as e:
+        logger.error(f"Database error: {e}")
+
 # ===================== হেল্পার ফাংশন =====================
 def replace_phone(data, phone):
     if isinstance(data, dict):
@@ -58,42 +138,41 @@ def check_success(text, status):
         return any(word in text.lower() for word in success_keywords)
     return False
 
-# ===================== লগিং =====================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
-
-# ===================== ডাটাবেস =====================
-async def init_db():
+# ===================== API ট্র্যাকিং =====================
+async def track_api_usage(api_name, user_id, success):
     try:
         async with aiosqlite.connect("bot_database.db") as db:
-            await db.execute("""CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                balance INTEGER DEFAULT 10,
-                total_sms INTEGER DEFAULT 0,
-                total_bombing INTEGER DEFAULT 0,
-                join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                status TEXT DEFAULT 'active'
-            )""")
-            await db.execute("""CREATE TABLE IF NOT EXISTS redeem_codes (
-                code TEXT PRIMARY KEY,
-                amount INTEGER,
-                usages INTEGER
-            )""")
-            await db.execute("""CREATE TABLE IF NOT EXISTS redeem_history (
-                user_id INTEGER,
-                code TEXT,
-                PRIMARY KEY (user_id, code)
-            )""")
-            await db.execute("INSERT OR IGNORE INTO redeem_codes (code, amount, usages) VALUES ('FREE50', 50, 100)")
-            await db.execute("INSERT OR IGNORE INTO redeem_codes (code, amount, usages) VALUES ('WELCOME10', 10, 200)")
+            # API স্ট্যাটস আপডেট
+            await db.execute(
+                """INSERT INTO api_stats (api_name, total_calls, total_success, total_failed) 
+                   VALUES (?, 1, ?, ?) 
+                   ON CONFLICT(api_name) DO UPDATE SET 
+                   total_calls = total_calls + 1, 
+                   total_success = total_success + ?, 
+                   total_failed = total_failed + ?, 
+                   last_used = CURRENT_TIMESTAMP""",
+                (api_name, 1 if success else 0, 0 if success else 1,
+                 1 if success else 0, 0 if success else 1)
+            )
+            
+            # ইউজার স্ট্যাটস আপডেট
+            await db.execute(
+                """INSERT INTO user_api_stats (user_id, api_name, total_calls) 
+                   VALUES (?, ?, 1) 
+                   ON CONFLICT(user_id, api_name) DO UPDATE SET 
+                   total_calls = total_calls + 1, 
+                   last_used = CURRENT_TIMESTAMP""",
+                (user_id, api_name)
+            )
+            
+            # API ইউসেজ লগ
+            await db.execute(
+                "INSERT INTO api_usage (api_name, user_id, success) VALUES (?, ?, ?)",
+                (api_name, user_id, 1 if success else 0)
+            )
             await db.commit()
-            logger.info("✅ Database initialized")
     except Exception as e:
-        logger.error(f"Database error: {e}")
+        logger.error(f"Track API error: {e}")
 
 # ===================== কীবোর্ড =====================
 def get_main_keyboard():
@@ -101,6 +180,14 @@ def get_main_keyboard():
         ["📨 Send SMS", "💣 SMS Bomber"],
         ["👤 My Profile", "🎁 Redeem Code"],
         ["📊 My Stats", "📞 Contact Admin"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_admin_keyboard():
+    keyboard = [
+        ["📊 Live Stats", "📈 API Stats"],
+        ["👥 Users", "📋 API List"],
+        ["🔙 Back"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -119,6 +206,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (user_id, user.username or user.first_name)
         )
         await db.commit()
+    
+    # অ্যাডমিন চেক
+    if user_id == ADMIN_ID:
+        await update.message.reply_text(
+            f"👑 **Admin Panel**\n\n"
+            f"Welcome Admin {user.first_name}!\n"
+            f"🆔 ID: `{user_id}`\n\n"
+            f"📌 Select an option:",
+            parse_mode="Markdown",
+            reply_markup=get_admin_keyboard()
+        )
+        return
     
     await update.message.reply_text(
         f"🔥 **Welcome {user.first_name}!**\n\n"
@@ -240,7 +339,7 @@ async def sms_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data.clear()
 
-# ===================== SMS BOMBER (এখন কাজ করবে) =====================
+# ===================== SMS BOMBER =====================
 async def cmd_bomber(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "💣 **SMS Bomber**\n\n"
@@ -355,6 +454,9 @@ async def bomber_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     api_failed += 1
                     failed_count += 1
                     logger.error(f"API error {api['name']}: {e}")
+                
+                # ট্র্যাক API ইউসেজ
+                await track_api_usage(api['name'], user_id, api_success > 0)
                 
                 total_done = (i-1) * amount + (j+1)
                 if total_done % 10 == 0 or total_done == total_sms:
@@ -499,6 +601,150 @@ async def contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard()
     )
 
+# ===================== অ্যাডমিন লাইভ স্ট্যাটাস =====================
+async def admin_live_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    async with aiosqlite.connect("bot_database.db") as db:
+        # মোট API কল
+        async with db.execute("SELECT COUNT(*) FROM api_usage") as cur:
+            total_calls = await cur.fetchone()
+        
+        # আজকের API কল
+        async with db.execute(
+            "SELECT COUNT(*) FROM api_usage WHERE DATE(usage_time) = DATE('now')"
+        ) as cur:
+            today_calls = await cur.fetchone()
+        
+        # সফল/ব্যর্থ
+        async with db.execute("SELECT COUNT(*) FROM api_usage WHERE success = 1") as cur:
+            total_success = await cur.fetchone()
+        
+        async with db.execute("SELECT COUNT(*) FROM api_usage WHERE success = 0") as cur:
+            total_failed = await cur.fetchone()
+        
+        # সেরা API
+        async with db.execute(
+            "SELECT api_name, total_success, total_failed FROM api_stats ORDER BY total_success DESC LIMIT 5"
+        ) as cur:
+            top_apis = await cur.fetchall()
+        
+        # সক্রিয় ইউজার (শেষ ১ ঘন্টায়)
+        async with db.execute(
+            "SELECT COUNT(DISTINCT user_id) FROM api_usage WHERE usage_time > datetime('now', '-1 hour')"
+        ) as cur:
+            active_users = await cur.fetchone()
+    
+    response = (
+        f"📊 **LIVE API STATS**\n"
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"{'━' * 20}\n\n"
+        f"📈 **Overview:**\n"
+        f"├─ Total API Calls: {total_calls[0]}\n"
+        f"├─ Today's Calls: {today_calls[0]}\n"
+        f"├─ Active Users (1h): {active_users[0]}\n"
+        f"├─ ✅ Success: {total_success[0]}\n"
+        f"└─ ❌ Failed: {total_failed[0]}\n\n"
+        f"🏆 **Top 5 APIs:**\n"
+    )
+    
+    for i, api in enumerate(top_apis, 1):
+        success_rate = round((api[1] / (api[1] + api[2])) * 100, 2) if (api[1] + api[2]) > 0 else 0
+        response += f"{i}. {api[0]}: ✅{api[1]} ❌{api[2]} ({success_rate}%)\n"
+    
+    response += f"\n📊 **API Limits:**\n"
+    response += f"├─ Daily Limit: {API_LIMITS['daily_limit']}\n"
+    response += f"├─ Per User: {API_LIMITS['per_user_limit']}\n"
+    response += f"├─ Interval: {API_LIMITS['api_call_interval']}s\n"
+    response += f"└─ Max Retries: {API_LIMITS['max_retries']}\n"
+    
+    await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+
+# ===================== অ্যাডমিন API স্ট্যাটস =====================
+async def admin_api_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute(
+            "SELECT api_name, total_calls, total_success, total_failed, last_used FROM api_stats ORDER BY total_calls DESC"
+        ) as cur:
+            all_apis = await cur.fetchall()
+    
+    if not all_apis:
+        await update.message.reply_text("📊 No API stats yet!", reply_markup=get_admin_keyboard())
+        return
+    
+    response = "📈 **API Statistics**\n"
+    response += f"{'━' * 20}\n\n"
+    
+    for api in all_apis[:15]:
+        success_rate = round((api[2] / api[1]) * 100, 2) if api[1] > 0 else 0
+        response += f"📡 {api[0]}\n"
+        response += f"   ├─ Calls: {api[1]}\n"
+        response += f"   ├─ ✅ {api[2]} | ❌ {api[3]}\n"
+        response += f"   ├─ Rate: {success_rate}%\n"
+        response += f"   └─ Last: {api[4][:16]}\n\n"
+    
+    await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+
+# ===================== অ্যাডমিন ইউজার লিস্ট =====================
+async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute(
+            "SELECT user_id, username, total_sms, total_bombing, balance FROM users ORDER BY total_bombing DESC LIMIT 20"
+        ) as cur:
+            users = await cur.fetchall()
+    
+    if not users:
+        await update.message.reply_text("👥 No users found!", reply_markup=get_admin_keyboard())
+        return
+    
+    response = "👥 **Top 20 Users**\n"
+    response += f"{'━' * 20}\n\n"
+    
+    for i, user in enumerate(users, 1):
+        response += f"{i}. ID: `{user[0]}`\n"
+        response += f"   👤 {user[1] or 'N/A'}\n"
+        response += f"   💰 Balance: {user[4]}\n"
+        response += f"   📨 SMS: {user[2]} | 💣 Bomb: {user[3]}\n\n"
+    
+    await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+
+# ===================== অ্যাডমিন API লিস্ট =====================
+async def admin_api_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    response = "📡 **API List**\n"
+    response += f"{'━' * 20}\n\n"
+    response += f"📌 Total APIs: {len(WORKING_APIS)}\n\n"
+    
+    for i, api in enumerate(WORKING_APIS, 1):
+        response += f"{i}. {api['name']}\n"
+    
+    await update.message.reply_text(response, parse_mode="Markdown", reply_markup=get_admin_keyboard())
+
+# ===================== অ্যাডমিন কমান্ড =====================
+async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    
+    await update.message.reply_text(
+        f"👑 **Admin Panel**\n\n"
+        f"📊 Live Stats - দেখুন API ব্যবহার\n"
+        f"📈 API Stats - API পরিসংখ্যান\n"
+        f"👥 Users - ইউজার লিস্ট\n"
+        f"📋 API List - সব API দেখুন\n\n"
+        f"📌 Select an option:",
+        parse_mode="Markdown",
+        reply_markup=get_admin_keyboard()
+    )
+
 # ===================== মেসেজ হ্যান্ডলার =====================
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -506,11 +752,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     logger.info(f"📩 Message from {user_id}: {message}")
     
+    # ===== অ্যাডমিন কমান্ড =====
+    if user_id == ADMIN_ID:
+        if message == "📊 Live Stats":
+            await admin_live_stats(update, context)
+            return
+        elif message == "📈 API Stats":
+            await admin_api_stats(update, context)
+            return
+        elif message == "👥 Users":
+            await admin_users_list(update, context)
+            return
+        elif message == "📋 API List":
+            await admin_api_list(update, context)
+            return
+        elif message == "🔙 Back":
+            await update.message.reply_text("🏠 Main Menu", reply_markup=get_main_keyboard())
+            return
+    
+    # ===== ব্যাক =====
     if message == "🔙 Back":
         await update.message.reply_text("🏠 **Main Menu**", parse_mode="Markdown", reply_markup=get_main_keyboard())
         context.user_data.clear()
         return
     
+    # ===== মেইন মেনু =====
     if message == "📨 Send SMS":
         await cmd_sms(update, context)
         return
@@ -535,6 +801,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await contact(update, context)
         return
     
+    # ===== স্টেট প্রসেস =====
     state = context.user_data.get('state')
     
     if state == 'sms_number':
