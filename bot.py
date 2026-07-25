@@ -16,7 +16,7 @@ OWNER_USERNAME = "@RobiEntertainment"
 # API
 SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
 SMS_API_KEY = "Shuvo55356"
-BOMBER_API_URL = "https://apu-sand.vercel.app/send?number="
+BOMBER_API_URL = "https://apu-sand.vercel.app/send?number=01948767846"
 
 # ===================== লগিং =====================
 logging.basicConfig(
