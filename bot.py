@@ -3,6 +3,9 @@ import logging
 import requests
 import aiosqlite
 import aiohttp
+import json
+import re
+import os
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -19,7 +22,10 @@ SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
 SMS_API_KEY = "Shuvo55356"
 
 # BOMBER API
-BOMBER_API_URL = "https://apu-inky.vercel.app/send?number="
+BOMBER_API_URL = "https://apu-sand.vercel.app/send?number="
+
+# DOWNLOADER API
+DOWNLOAD_API_URL = "https://api.helll.workers.dev/api?url="
 
 # ===================== লগিং =====================
 logging.basicConfig(
@@ -32,6 +38,7 @@ logger = logging.getLogger(__name__)
 async def init_db():
     try:
         async with aiosqlite.connect("bot_database.db") as db:
+            # ইউজার টেবিল
             await db.execute("""CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
@@ -58,6 +65,14 @@ async def init_db():
                 PRIMARY KEY (user_id, code)
             )""")
             
+            # ডাউনলোড হিস্টরি টেবিল
+            await db.execute("""CREATE TABLE IF NOT EXISTS download_history (
+                user_id INTEGER,
+                url TEXT,
+                type TEXT,
+                download_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )""")
+            
             # অ্যাডমিন যোগ
             await db.execute(
                 "INSERT OR IGNORE INTO users (user_id, username, balance, status) VALUES (?, 'Admin', 9999, 'active')",
@@ -75,10 +90,22 @@ async def is_admin(user_id):
 
 # ===================== কীবোর্ড =====================
 def get_main_keyboard():
+    """মেইন মেনু কীবোর্ড (ডাউনলোডার যোগ করা)"""
     keyboard = [
         ["📨 Send SMS", "💣 SMS Bomber"],
         ["👤 My Profile", "🎁 Redeem Code"],
-        ["📊 My Stats", "📞 Contact Admin"]
+        ["📊 My Stats", "📞 Contact Admin"],
+        ["📥 Media Downloader"]  # নতুন ডাউনলোডার বাটন
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_downloader_keyboard():
+    """ডাউনলোডার মেনু কীবোর্ড"""
+    keyboard = [
+        ["📥 YouTube Downloader", "🎵 TikTok Downloader"],
+        ["📸 Instagram Downloader", "📹 Facebook Downloader"],
+        ["🐦 Twitter/X Downloader"],
+        ["📊 Download History", "🔙 Back"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -97,6 +124,20 @@ def get_admin_keyboard():
 def get_back_keyboard():
     keyboard = [["🔙 Back"]]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+
+def get_download_options():
+    """ভিডিও/অডিও অপশন"""
+    keyboard = [
+        [
+            InlineKeyboardButton("🎬 Video (MP4)", callback_data="download_video"),
+            InlineKeyboardButton("🎵 Audio (MP3)", callback_data="download_audio")
+        ],
+        [
+            InlineKeyboardButton("🖼 Thumbnail", callback_data="download_thumbnail"),
+            InlineKeyboardButton("❌ Cancel", callback_data="download_cancel")
+        ]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 # ===================== /start =====================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -147,6 +188,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return
     
+    # ===== ডাউনলোডার =====
+    if message == "📥 Media Downloader":
+        await show_downloader_menu(update, context)
+        return
+    
+    # ===== ডাউনলোডার সাব-মেনু =====
+    if message == "📥 YouTube Downloader":
+        await youtube_downloader(update, context)
+        return
+    
+    if message == "🎵 TikTok Downloader":
+        await tiktok_downloader(update, context)
+        return
+    
+    if message == "📸 Instagram Downloader":
+        await instagram_downloader(update, context)
+        return
+    
+    if message == "📹 Facebook Downloader":
+        await facebook_downloader(update, context)
+        return
+    
+    if message == "🐦 Twitter/X Downloader":
+        await twitter_downloader(update, context)
+        return
+    
+    if message == "📊 Download History":
+        await show_download_history(update, context)
+        return
+    
     # ===== Send SMS =====
     if message == "📨 Send SMS":
         await update.message.reply_text(
@@ -194,6 +265,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
+    # ===== ডাউনলোড URL প্রসেস =====
+    if context.user_data.get('downloader_state'):
+        await process_download(update, context)
+        return
+    
     # ===== স্টেট অনুযায়ী প্রসেস =====
     state = context.user_data.get('state')
     
@@ -213,630 +289,331 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_main_keyboard()
         )
 
-# ===================== অ্যাডমিন কমান্ড =====================
-async def handle_admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """অ্যাডমিন কমান্ড হ্যান্ডল"""
-    message = update.message.text
-    
-    # ===== ব্যাক টু ইউজার =====
-    if message == "⬅️ Back to User":
-        await update.message.reply_text(
-            "🔄 Switched to User Mode",
-            reply_markup=get_main_keyboard()
-        )
-        context.user_data.clear()
-        return
-    
-    # ===== টোটাল ইউজার =====
-    if message == "👥 Total Users":
-        async with aiosqlite.connect("bot_database.db") as db:
-            async with db.execute("SELECT COUNT(*) FROM users") as cur:
-                total = await cur.fetchone()
-            async with db.execute("SELECT COUNT(*) FROM accounts") as cur:
-                accounts = await cur.fetchone()
-            async with db.execute("SELECT COUNT(*) FROM users WHERE status = 'active'") as cur:
-                active = await cur.fetchone()
-            async with db.execute("SELECT COUNT(*) FROM users WHERE status = 'banned'") as cur:
-                banned = await cur.fetchone()
-        
-        await update.message.reply_text(
-            f"📊 **System Stats**\n\n"
-            f"👥 Total Users: {total[0]}\n"
-            f"✅ Active: {active[0]}\n"
-            f"🚫 Banned: {banned[0]}\n"
-            f"🔐 Accounts: {accounts[0]}",
-            parse_mode='Markdown',
-            reply_markup=get_admin_keyboard()
-        )
-        return
-    
-    # ===== ইউজার স্ট্যাটস =====
-    if message == "📊 User Stats":
-        await update.message.reply_text(
-            "👤 Enter Telegram ID to view stats:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'user_stats'
-        return
-    
-    # ===== অ্যাড ক্রেডিট =====
-    if message == "➕ Add Credit":
-        await update.message.reply_text(
-            "👤 Enter Telegram ID:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'add_id'
-        return
-    
-    # ===== রিমুভ ক্রেডিট =====
-    if message == "➖ Remove Credit":
-        await update.message.reply_text(
-            "👤 Enter Telegram ID:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'remove_id'
-        return
-    
-    # ===== ইউজার ব্যান =====
-    if message == "🚫 User Ban":
-        await update.message.reply_text(
-            "👤 Enter Telegram ID to BAN:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'ban_id'
-        return
-    
-    # ===== ইউজার আনব্যান =====
-    if message == "✅ User Unban":
-        await update.message.reply_text(
-            "👤 Enter Telegram ID to UNBAN:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'unban_id'
-        return
-    
-    # ===== ব্রডকাস্ট =====
-    if message == "📣 Broadcast":
-        await update.message.reply_text(
-            "📢 Send your broadcast message:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'broadcast'
-        return
-    
-    # ===== ক্রিয়েট রিডিম কোড =====
-    if message == "🎟 Create Redeem Code":
-        await update.message.reply_text(
-            "🎟 Enter code name (e.g., FREE50):",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'code_name'
-        return
-    
-    # ===== ক্রিয়েট অ্যাকাউন্ট =====
-    if message == "🔐 Create Account":
-        await update.message.reply_text(
-            "👤 Enter username:",
-            reply_markup=get_back_keyboard()
-        )
-        context.user_data['admin_state'] = 'acc_user'
-        return
-    
-    # ===== অ্যাডমিন স্টেট প্রসেস =====
-    if context.user_data.get('admin_state'):
-        await process_admin_states(update, context)
-
-# ===================== অ্যাডমিন স্টেট প্রসেস =====================
-async def process_admin_states(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """অ্যাডমিন স্টেট প্রসেস"""
-    user_id = update.effective_user.id
-    message = update.message.text
-    state = context.user_data.get('admin_state')
-    
-    # ===== ইউজার স্ট্যাটস =====
-    if state == 'user_stats':
-        try:
-            target_id = int(message)
-            async with aiosqlite.connect("bot_database.db") as db:
-                async with db.execute(
-                    "SELECT username, balance, status, join_date FROM users WHERE user_id = ?",
-                    (target_id,)
-                ) as cur:
-                    row = await cur.fetchone()
-                    
-                    if row:
-                        await update.message.reply_text(
-                            f"📊 **User Stats**\n\n"
-                            f"🆔 ID: `{target_id}`\n"
-                            f"👤 Username: {row[0] or 'N/A'}\n"
-                            f"💰 Balance: {row[1]}\n"
-                            f"🚦 Status: {row[2].capitalize()}\n"
-                            f"📅 Joined: {row[3]}",
-                            parse_mode='Markdown',
-                            reply_markup=get_admin_keyboard()
-                        )
-                    else:
-                        await update.message.reply_text(
-                            f"❌ User {target_id} not found!",
-                            reply_markup=get_admin_keyboard()
-                        )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID! Enter a number.")
-            context.user_data['admin_state'] = None
-    
-    # ===== অ্যাড ক্রেডিট =====
-    elif state == 'add_id':
-        try:
-            target_id = int(message)
-            context.user_data['target_id'] = target_id
-            context.user_data['admin_state'] = 'add_amount'
-            await update.message.reply_text("💰 Enter amount to add:")
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID! Enter a number.")
-            context.user_data['admin_state'] = None
-    
-    elif state == 'add_amount':
-        try:
-            amount = int(message)
-            target_id = context.user_data.get('target_id')
-            
-            async with aiosqlite.connect("bot_database.db") as db:
-                await db.execute(
-                    "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-                    (amount, target_id)
-                )
-                await db.commit()
-            
-            await update.message.reply_text(
-                f"✅ Added {amount} credits to user {target_id}.",
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid amount!")
-            context.user_data['admin_state'] = None
-    
-    # ===== রিমুভ ক্রেডিট =====
-    elif state == 'remove_id':
-        try:
-            target_id = int(message)
-            context.user_data['target_id'] = target_id
-            context.user_data['admin_state'] = 'remove_amount'
-            await update.message.reply_text("💰 Enter amount to remove:")
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID!")
-            context.user_data['admin_state'] = None
-    
-    elif state == 'remove_amount':
-        try:
-            amount = int(message)
-            target_id = context.user_data.get('target_id')
-            
-            async with aiosqlite.connect("bot_database.db") as db:
-                async with db.execute("SELECT balance FROM users WHERE user_id = ?", (target_id,)) as cur:
-                    row = await cur.fetchone()
-                    if not row:
-                        await update.message.reply_text(f"❌ User {target_id} not found!")
-                        context.user_data['admin_state'] = None
-                        return
-                    
-                    if row[0] < amount:
-                        await update.message.reply_text(
-                            f"❌ User has only {row[0]} credits. Cannot remove {amount}.",
-                            reply_markup=get_admin_keyboard()
-                        )
-                        context.user_data['admin_state'] = None
-                        return
-                
-                await db.execute(
-                    "UPDATE users SET balance = balance - ? WHERE user_id = ?",
-                    (amount, target_id)
-                )
-                await db.commit()
-            
-            await update.message.reply_text(
-                f"✅ Removed {amount} credits from user {target_id}.",
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid amount!")
-            context.user_data['admin_state'] = None
-    
-    # ===== ব্যান =====
-    elif state == 'ban_id':
-        try:
-            target_id = int(message)
-            if target_id == ADMIN_ID:
-                await update.message.reply_text("❌ Cannot ban Admin!")
-                context.user_data['admin_state'] = None
-                return
-            
-            async with aiosqlite.connect("bot_database.db") as db:
-                await db.execute(
-                    "UPDATE users SET status = 'banned' WHERE user_id = ?",
-                    (target_id,)
-                )
-                await db.commit()
-            
-            await update.message.reply_text(
-                f"🚫 User {target_id} banned!",
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID!")
-            context.user_data['admin_state'] = None
-    
-    # ===== আনব্যান =====
-    elif state == 'unban_id':
-        try:
-            target_id = int(message)
-            
-            async with aiosqlite.connect("bot_database.db") as db:
-                await db.execute(
-                    "UPDATE users SET status = 'active' WHERE user_id = ?",
-                    (target_id,)
-                )
-                await db.commit()
-            
-            await update.message.reply_text(
-                f"✅ User {target_id} unbanned!",
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid ID!")
-            context.user_data['admin_state'] = None
-    
-    # ===== ব্রডকাস্ট =====
-    elif state == 'broadcast':
-        broadcast_text = message
-        
-        async with aiosqlite.connect("bot_database.db") as db:
-            async with db.execute("SELECT user_id FROM users WHERE status = 'active'") as cur:
-                users = await cur.fetchall()
-        
-        await update.message.reply_text(f"⏳ Broadcasting to {len(users)} users...")
-        
-        success = 0
-        failed = 0
-        
-        for user in users:
-            try:
-                await context.bot.send_message(
-                    user[0],
-                    f"📢 **Admin Broadcast**\n\n{broadcast_text}",
-                    parse_mode='Markdown'
-                )
-                success += 1
-                await asyncio.sleep(0.05)
-            except:
-                failed += 1
-        
-        await update.message.reply_text(
-            f"✅ Broadcast Complete!\n"
-            f"📤 Sent: {success}\n"
-            f"❌ Failed: {failed}",
-            reply_markup=get_admin_keyboard()
-        )
-        context.user_data['admin_state'] = None
-    
-    # ===== রিডিম কোড =====
-    elif state == 'code_name':
-        code = message.strip().upper()
-        context.user_data['code_name'] = code
-        context.user_data['admin_state'] = 'code_amount'
-        await update.message.reply_text("💰 Enter amount:")
-    
-    elif state == 'code_amount':
-        try:
-            amount = int(message)
-            context.user_data['code_amount'] = amount
-            context.user_data['admin_state'] = 'code_usages'
-            await update.message.reply_text("👥 Enter number of uses:")
-        except ValueError:
-            await update.message.reply_text("❌ Invalid amount!")
-            context.user_data['admin_state'] = None
-    
-    elif state == 'code_usages':
-        try:
-            usages = int(message)
-            code = context.user_data.get('code_name')
-            amount = context.user_data.get('code_amount')
-            
-            async with aiosqlite.connect("bot_database.db") as db:
-                await db.execute(
-                    "INSERT INTO redeem_codes (code, amount, usages) VALUES (?, ?, ?)",
-                    (code, amount, usages)
-                )
-                await db.commit()
-            
-            await update.message.reply_text(
-                f"✅ Code Created!\n"
-                f"🎟 Code: `{code}`\n"
-                f"💰 Amount: {amount}\n"
-                f"👥 Uses: {usages}",
-                parse_mode='Markdown',
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-        except ValueError:
-            await update.message.reply_text("❌ Invalid number!")
-            context.user_data['admin_state'] = None
-        except aiosqlite.IntegrityError:
-            await update.message.reply_text(
-                f"❌ Code '{code}' already exists!",
-                reply_markup=get_admin_keyboard()
-            )
-            context.user_data['admin_state'] = None
-    
-    # ===== অ্যাকাউন্ট ক্রিয়েট =====
-    elif state == 'acc_user':
-        username = message.strip()
-        context.user_data['acc_user'] = username
-        context.user_data['admin_state'] = 'acc_pass'
-        await update.message.reply_text("🔑 Enter password:")
-    
-    elif state == 'acc_pass':
-        password = message.strip()
-        username = context.user_data.get('acc_user')
-        
-        async with aiosqlite.connect("bot_database.db") as db:
-            try:
-                await db.execute(
-                    "INSERT INTO accounts (username, password) VALUES (?, ?)",
-                    (username, password)
-                )
-                await db.commit()
-                
-                await update.message.reply_text(
-                    f"✅ Account Created!\n"
-                    f"👤 Username: `{username}`\n"
-                    f"🔑 Password: `{password}`",
-                    parse_mode='Markdown',
-                    reply_markup=get_admin_keyboard()
-                )
-            except aiosqlite.IntegrityError:
-                await update.message.reply_text(
-                    f"❌ Username '{username}' already exists!",
-                    reply_markup=get_admin_keyboard()
-                )
-        
-        context.user_data['admin_state'] = None
-
-# ===================== SMS প্রসেস =====================
-async def process_sms_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """SMS নম্বর প্রসেস"""
-    number = update.message.text.strip()
-    
-    if not number.isdigit() or len(number) < 11:
-        await update.message.reply_text("❌ Invalid number! Enter 11 digits:")
-        return
-    
-    context.user_data['sms_number'] = number
-    context.user_data['state'] = 'sms_message'
-    
+# ===================== ডাউনলোডার ফাংশন =====================
+async def show_downloader_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ডাউনলোডার মেনু দেখায়"""
     await update.message.reply_text(
-        f"✅ Number: {number}\n\n💬 Enter your message:",
-        reply_markup=get_back_keyboard()
-    )
-
-async def process_sms_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """SMS মেসেজ প্রসেস"""
-    user_id = update.effective_user.id
-    number = context.user_data.get('sms_number')
-    sms_text = update.message.text
-    
-    # ব্যালেন্স চেক
-    async with aiosqlite.connect("bot_database.db") as db:
-        async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
-            row = await cursor.fetchone()
-            if not row or row[0] < 1:
-                await update.message.reply_text(f"❌ Insufficient credits! Contact: {ADMIN_USERNAME}")
-                context.user_data.clear()
-                return
-    
-    await update.message.reply_text(f"⏳ Sending SMS to {number}...")
-    
-    # SMS পাঠানো
-    success = False
-    response_text = ""
-    
-    try:
-        params = {"key": SMS_API_KEY, "number": number, "msg": sms_text}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(SMS_API_URL, params=params, timeout=30) as resp:
-                response_text = await resp.text()
-                
-                try:
-                    data = await resp.json()
-                    if data.get("status") == "success":
-                        success = True
-                except:
-                    if "success" in response_text.lower():
-                        success = True
-    except Exception as e:
-        response_text = f"Error: {str(e)}"
-    
-    if success:
-        async with aiosqlite.connect("bot_database.db") as db:
-            await db.execute("UPDATE users SET balance = balance - 1 WHERE user_id = ?", (user_id,))
-            await db.commit()
-        
-        await update.message.reply_text(
-            f"✅ SMS Sent Successfully!\n💰 1 Credit deducted.",
-            reply_markup=get_main_keyboard()
-        )
-    else:
-        await update.message.reply_text(
-            f"❌ Failed to send SMS!\n⚠️ {response_text[:100]}",
-            reply_markup=get_main_keyboard()
-        )
-    
-    context.user_data.clear()
-
-# ===================== BOMBER প্রসেস =====================
-async def process_bomber_number(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bomber নম্বর প্রসেস"""
-    number = update.message.text.strip()
-    
-    if not number.isdigit() or len(number) < 11:
-        await update.message.reply_text("❌ Invalid number! Enter 11 digits:")
-        return
-    
-    context.user_data['bomber_number'] = number
-    context.user_data['state'] = 'bomber_amount'
-    
-    await update.message.reply_text(
-        f"✅ Number: {number}\n\n💥 Enter amount (1-100):",
-        reply_markup=get_back_keyboard()
-    )
-
-async def process_bomber_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Bomber অ্যামাউন্ট প্রসেস"""
-    user_id = update.effective_user.id
-    number = context.user_data.get('bomber_number')
-    
-    try:
-        amount = int(update.message.text.strip())
-        if amount < 1 or amount > 100:
-            await update.message.reply_text("❌ Amount must be 1-100!")
-            return
-    except ValueError:
-        await update.message.reply_text("❌ Enter a valid number!")
-        return
-    
-    msg = await update.message.reply_text(
-        f"⏳ Bombing {number} ({amount} times)...\nPlease wait..."
-    )
-    
-    success_count = 0
-    
-    for i in range(amount):
-        try:
-            response = requests.get(f"{BOMBER_API_URL}{number}", timeout=10)
-            data = response.json()
-            if data.get('success', 0) > 0:
-                success_count += data.get('success', 0)
-        except:
-            pass
-        
-        if (i + 1) % 5 == 0 or (i + 1) == amount:
-            try:
-                await msg.edit_text(
-                    f"⏳ Bombing...\n"
-                    f"✅ Success: {success_count}\n"
-                    f"📊 Progress: {i+1}/{amount}"
-                )
-            except:
-                pass
-        
-        await asyncio.sleep(0.3)
-    
-    await msg.edit_text(
-        f"✅ Bombing Complete!\n\n"
-        f"📱 Target: {number}\n"
-        f"💥 Total: {amount}\n"
-        f"✅ Success: {success_count}",
-        reply_markup=get_main_keyboard()
-    )
-    
-    context.user_data.clear()
-
-# ===================== প্রোফাইল =====================
-async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """প্রোফাইল দেখায়"""
-    user_id = update.effective_user.id
-    
-    async with aiosqlite.connect("bot_database.db") as db:
-        async with db.execute(
-            "SELECT username, balance, status FROM users WHERE user_id = ?",
-            (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            
-            if row:
-                await update.message.reply_text(
-                    f"👤 **My Profile**\n\n"
-                    f"🆔 ID: `{user_id}`\n"
-                    f"👤 Username: {row[0] or 'N/A'}\n"
-                    f"💰 Credits: {row[1]}\n"
-                    f"🚦 Status: {row[2].capitalize()}\n\n"
-                    f"👨‍💻 Admin: {ADMIN_USERNAME}",
-                    parse_mode="Markdown",
-                    reply_markup=get_main_keyboard()
-                )
-            else:
-                await update.message.reply_text(
-                    "❌ User not found! Please /start again.",
-                    reply_markup=get_main_keyboard()
-                )
-
-# ===================== স্ট্যাটস =====================
-async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """স্ট্যাটস দেখায়"""
-    user_id = update.effective_user.id
-    
-    async with aiosqlite.connect("bot_database.db") as db:
-        async with db.execute(
-            "SELECT balance FROM users WHERE user_id = ?",
-            (user_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
-            balance = row[0] if row else 0
-    
-    await update.message.reply_text(
-        f"📊 **My Stats**\n\n"
-        f"💰 Current Balance: {balance}\n"
-        f"📨 SMS Sent: 0\n"
-        f"💣 Bombing Done: 0\n\n"
-        f"📌 Use Send SMS or SMS Bomber!",
+        "📥 **Media Downloader**\n\n"
+        "Download videos from:\n"
+        "• 📥 YouTube\n"
+        "• 🎵 TikTok\n"
+        "• 📸 Instagram\n"
+        "• 📹 Facebook\n"
+        "• 🐦 Twitter/X\n\n"
+        "🔹 No Watermark\n"
+        "🔹 HD Quality\n"
+        "🔹 Fast Download\n\n"
+        "Select a downloader below:",
         parse_mode="Markdown",
-        reply_markup=get_main_keyboard()
+        reply_markup=get_downloader_keyboard()
     )
 
-# ===================== রিডিম =====================
-async def process_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """রিডিম প্রসেস"""
+async def youtube_downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ইউটিউব ডাউনলোডার"""
+    await update.message.reply_text(
+        "📥 **YouTube Downloader**\n\n"
+        "Send any YouTube link:\n"
+        "• Video: https://youtube.com/watch?v=xxxx\n"
+        "• Shorts: https://youtube.com/shorts/xxxx\n\n"
+        "⚠️ Max 10 minutes video allowed.",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
+    )
+    context.user_data['downloader_state'] = 'youtube'
+
+async def tiktok_downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """টিকটক ডাউনলোডার"""
+    await update.message.reply_text(
+        "🎵 **TikTok Downloader**\n\n"
+        "Send any TikTok link:\n"
+        "• https://tiktok.com/@username/video/xxxx\n"
+        "• https://vm.tiktok.com/xxxx\n\n"
+        "✅ No watermark video supported!",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
+    )
+    context.user_data['downloader_state'] = 'tiktok'
+
+async def instagram_downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ইনস্টাগ্রাম ডাউনলোডার"""
+    await update.message.reply_text(
+        "📸 **Instagram Downloader**\n\n"
+        "Send any Instagram link:\n"
+        "• Post: https://instagram.com/p/xxxx\n"
+        "• Reel: https://instagram.com/reel/xxxx\n\n"
+        "⚠️ Private accounts content not supported.",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
+    )
+    context.user_data['downloader_state'] = 'instagram'
+
+async def facebook_downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ফেসবুক ডাউনলোডার"""
+    await update.message.reply_text(
+        "📹 **Facebook Downloader**\n\n"
+        "Send any Facebook link:\n"
+        "• Video: https://facebook.com/xxxx\n"
+        "• https://fb.watch/xxxx\n\n"
+        "⚠️ Public posts only.",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
+    )
+    context.user_data['downloader_state'] = 'facebook'
+
+async def twitter_downloader(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """টুইটার ডাউনলোডার"""
+    await update.message.reply_text(
+        "🐦 **Twitter/X Downloader**\n\n"
+        "Send any Twitter/X link:\n"
+        "• https://twitter.com/username/status/xxxx\n"
+        "• https://x.com/username/status/xxxx\n\n"
+        "✅ Video & GIF supported!",
+        parse_mode="Markdown",
+        reply_markup=get_back_keyboard()
+    )
+    context.user_data['downloader_state'] = 'twitter'
+
+# ===================== ডাউনলোড প্রসেসর =====================
+async def process_download(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ডাউনলোড প্রসেস"""
     user_id = update.effective_user.id
-    code = update.message.text.strip().upper()
+    url = update.message.text.strip()
+    state = context.user_data.get('downloader_state', '')
+    
+    # URL ভ্যালিডেশন
+    if not url.startswith(('http://', 'https://')):
+        await update.message.reply_text("❌ Invalid URL! Please send a valid link.")
+        return
+    
+    # ডাউনলোড টাইপ নির্ধারণ
+    download_type = {
+        'youtube': 'YouTube',
+        'tiktok': 'TikTok',
+        'instagram': 'Instagram',
+        'facebook': 'Facebook',
+        'twitter': 'Twitter'
+    }.get(state, 'Unknown')
+    
+    # প্রসেসিং মেসেজ
+    msg = await update.message.reply_text(
+        f"⏳ Processing {download_type} download...\n"
+        f"🔗 URL: {url[:50]}...\n"
+        f"⏰ Please wait..."
+    )
+    
+    try:
+        # API কল
+        api_url = f"{DOWNLOAD_API_URL}{url}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=30) as response:
+                if response.status == 200:
+                    try:
+                        data = await response.json()
+                        
+                        # API রেসপন্স থেকে ডাটা এক্সট্রাক্ট
+                        video_url = data.get('video', data.get('url', ''))
+                        audio_url = data.get('audio', data.get('music', ''))
+                        thumbnail = data.get('thumbnail', data.get('cover', ''))
+                        title = data.get('title', f"{download_type} Video")
+                        
+                        if video_url or audio_url:
+                            # ডাটা সেভ
+                            context.user_data['download_data'] = {
+                                'video_url': video_url,
+                                'audio_url': audio_url,
+                                'thumbnail': thumbnail,
+                                'title': title,
+                                'type': download_type,
+                                'url': url
+                            }
+                            
+                            await msg.edit_text(
+                                f"✅ Download successful!\n\n"
+                                f"📌 Title: {title[:50]}...\n"
+                                f"📱 Platform: {download_type}\n\n"
+                                f"Select download option:",
+                                reply_markup=get_download_options()
+                            )
+                            return
+                        else:
+                            await msg.edit_text(
+                                f"❌ No downloadable content found!\n"
+                                f"💡 Try another link."
+                            )
+                    except:
+                        await msg.edit_text(
+                            f"❌ Invalid response from server!\n"
+                            f"💡 Try again later."
+                        )
+                else:
+                    await msg.edit_text(
+                        f"❌ API Error!\n"
+                        f"Status: {response.status}\n\n"
+                        f"💡 Try again or use another link."
+                    )
+                
+    except asyncio.TimeoutError:
+        await msg.edit_text(
+            f"❌ Request timeout!\n"
+            f"💡 The server is taking too long. Try again later."
+        )
+    except Exception as e:
+        await msg.edit_text(
+            f"❌ Error!\n"
+            f"⚠️ {str(e)}"
+        )
+        logger.error(f"Download error: {e}")
+
+# ===================== ডাউনলোড অপশন হ্যান্ডলার =====================
+async def download_options_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ডাউনলোড অপশন হ্যান্ডলার"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    option = query.data
+    data = context.user_data.get('download_data', {})
+    
+    if option == 'download_cancel':
+        await query.edit_message_text("❌ Download cancelled.")
+        context.user_data['downloader_state'] = None
+        return
+    
+    if not data:
+        await query.edit_message_text("❌ No download data found! Please try again.")
+        return
+    
+    video_url = data.get('video_url', '')
+    audio_url = data.get('audio_url', '')
+    thumbnail = data.get('thumbnail', '')
+    title = data.get('title', 'video')
+    download_type = data.get('type', '')
+    
+    if option == 'download_video' and video_url:
+        await query.edit_message_text(f"⏳ Downloading video...")
+        try:
+            await query.message.reply_video(
+                video=video_url,
+                caption=f"📥 {download_type} Video\n"
+                       f"📌 {title[:100]}\n"
+                       f"👤 {OWNER_USERNAME}",
+                supports_streaming=True,
+                write_timeout=60
+            )
+            await query.message.reply_text("✅ Video sent successfully!")
+            
+            # হিস্টরি সেভ
+            async with aiosqlite.connect("bot_database.db") as db:
+                await db.execute(
+                    "INSERT INTO download_history (user_id, url, type) VALUES (?, ?, ?)",
+                    (user_id, data['url'], 'video')
+                )
+                await db.commit()
+            
+        except Exception as e:
+            await query.message.reply_text(f"❌ Failed to send video: {str(e)}")
+    
+    elif option == 'download_audio' and audio_url:
+        await query.edit_message_text(f"⏳ Downloading audio...")
+        try:
+            await query.message.reply_audio(
+                audio=audio_url,
+                caption=f"🎵 {download_type} Audio\n"
+                       f"📌 {title[:100]}\n"
+                       f"👤 {OWNER_USERNAME}",
+                write_timeout=60
+            )
+            await query.message.reply_text("✅ Audio sent successfully!")
+            
+            async with aiosqlite.connect("bot_database.db") as db:
+                await db.execute(
+                    "INSERT INTO download_history (user_id, url, type) VALUES (?, ?, ?)",
+                    (user_id, data['url'], 'audio')
+                )
+                await db.commit()
+            
+        except Exception as e:
+            await query.message.reply_text(f"❌ Failed to send audio: {str(e)}")
+    
+    elif option == 'download_thumbnail' and thumbnail:
+        await query.edit_message_text(f"⏳ Downloading thumbnail...")
+        try:
+            await query.message.reply_photo(
+                photo=thumbnail,
+                caption=f"🖼 {download_type} Thumbnail\n"
+                       f"📌 {title[:100]}\n"
+                       f"👤 {OWNER_USERNAME}"
+            )
+            await query.message.reply_text("✅ Thumbnail sent successfully!")
+            
+            async with aiosqlite.connect("bot_database.db") as db:
+                await db.execute(
+                    "INSERT INTO download_history (user_id, url, type) VALUES (?, ?, ?)",
+                    (user_id, data['url'], 'thumbnail')
+                )
+                await db.commit()
+            
+        except Exception as e:
+            await query.message.reply_text(f"❌ Failed to send thumbnail: {str(e)}")
+    
+    else:
+        await query.message.reply_text(
+            f"❌ Requested content not available!\n"
+            f"💡 Try another download option."
+        )
+
+# ===================== ডাউনলোড হিস্টরি =====================
+async def show_download_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ডাউনলোড হিস্টরি দেখায়"""
+    user_id = update.effective_user.id
     
     async with aiosqlite.connect("bot_database.db") as db:
-        # চেক করা ইউজার আগে ব্যবহার করেছে কিনা
-        async with db.execute("SELECT 1 FROM redeem_history WHERE user_id = ? AND code = ?", (user_id, code)) as cur:
-            if await cur.fetchone():
-                await update.message.reply_text("❌ You already used this code!")
-                context.user_data.clear()
-                return
-        
-        async with db.execute("SELECT amount, usages FROM redeem_codes WHERE code = ?", (code,)) as cursor:
-            row = await cursor.fetchone()
-            
-            if not row or row[1] <= 0:
-                await update.message.reply_text("❌ Invalid or expired code!")
-                context.user_data.clear()
-                return
-            
-            amount = row[0]
-            await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
-            await db.execute("UPDATE redeem_codes SET usages = usages - 1 WHERE code = ?", (code,))
-            await db.execute("INSERT OR IGNORE INTO redeem_history (user_id, code) VALUES (?, ?)", (user_id, code))
-            await db.commit()
+        async with db.execute(
+            "SELECT url, type, download_time FROM download_history WHERE user_id = ? ORDER BY download_time DESC LIMIT 20",
+            (user_id,)
+        ) as cursor:
+            rows = await cursor.fetchall()
+    
+    if not rows:
+        await update.message.reply_text(
+            "📊 **No Download History**\n\n"
+            "You haven't downloaded anything yet.\n"
+            "Start downloading now!",
+            parse_mode="Markdown",
+            reply_markup=get_downloader_keyboard()
+        )
+        return
+    
+    response = "📊 **My Download History**\n"
+    response += "━" * 20 + "\n\n"
+    
+    for i, row in enumerate(rows, 1):
+        url = row[0][:40] + "..." if len(row[0]) > 40 else row[0]
+        media_type = row[1].capitalize()
+        time = row[2][:16]
+        response += f"{i}. {media_type} - {url}\n"
+        response += f"   🕐 {time}\n\n"
     
     await update.message.reply_text(
-        f"🎉 Code Redeemed!\n✅ +{amount} Credits!",
-        reply_markup=get_main_keyboard()
+        response,
+        parse_mode="Markdown",
+        reply_markup=get_downloader_keyboard()
     )
-    context.user_data.clear()
+
+# ===================== বাকি ফাংশন (SMS, Bomber, ইত্যাদি) =====================
+# এখানে আপনার আগের কোডের সব ফাংশন থাকবে
+# process_sms_number, process_sms_message, process_bomber_number, 
+# process_bomber_amount, show_profile, show_stats, process_redeem,
+# handle_admin_commands, process_admin_states
+
+# ... (আপনার আগের কোডের সব ফাংশন এখানে বসান) ...
 
 # ===================== মেইন =====================
 async def main():
     """বট চালু"""
     try:
         print("="*50)
-        print("🤖 Starting Unified SMS Bot...")
+        print("🤖 Starting Unified SMS Bot with Downloader...")
         print(f"Token: {BOT_TOKEN[:15]}...")
         print(f"👑 Admin ID: {ADMIN_ID}")
         
@@ -848,6 +625,7 @@ async def main():
         
         # হ্যান্ডলার
         application.add_handler(CommandHandler("start", start))
+        application.add_handler(CallbackQueryHandler(download_options_handler, pattern="^download_"))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print("✅ Bot is ready! Starting polling...")
