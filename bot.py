@@ -11,7 +11,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 BOT_TOKEN = "8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0"
 ADMIN_ID = 1967494059
 ADMIN_USERNAME = "@RobiEntertainment"
-OWNER_USERNAME = "@DARK_TUSHAR"
+OWNER_USERNAME = "@RobiEntertainment"
 CHANNEL_USERNAME = "@VOTER_LIST_BANGLADESH"
 
 # SMS API
