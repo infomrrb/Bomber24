@@ -17,7 +17,7 @@ OWNER_USERNAME = "@RobiEntertainment"
 SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
 SMS_API_KEY = "Shuvo55356"
 # BOMBER API - বর্তমানে কাজ করছে না, তাই ডেমো মোডে রাখা হয়েছে
-BOMBER_API_URL = "https://apu-sand.vercel.app/send?number="
+BOMBER_API_URL = "https://apu-sand.vercel.app/send?number=01948767846"
 BOMBER_WORKING = False  # API কাজ করলে True করুন
 
 # ===================== লগিং =====================
