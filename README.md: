@@ -1,0 +1,26 @@
+# 🤖 Unified SMS Bot
+
+একটি টেলিগ্রাম বট যা SMS পাঠাতে এবং SMS Bomber ফিচার সমর্থন করে।
+
+## 📌 ফিচারসমূহ
+
+- 📨 SMS সেন্ড (ক্রেডিট সিস্টেম)
+- 💣 SMS বোম্বার (ফ্রি)
+- 👤 প্রোফাইল
+- 🎁 রিডিম কোড
+- 📊 স্ট্যাটস
+
+## 🚀 ইনস্টলেশন
+
+```bash
+# রেপো ক্লোন
+git clone https://github.com/your-username/telegram-sms-bot.git
+
+# ফোল্ডারে যান
+cd telegram-sms-bot
+
+# ডিপেন্ডেন্সি ইনস্টল
+pip install -r requirements.txt
+
+# বট চালান
+python bot.py
