@@ -1,387 +1,645 @@
+import asyncio
 import logging
-import requests
-import json
-import time
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import re
+import aiosqlite
+import aiohttp
+from datetime import datetime
+from aiogram import Bot, Dispatcher, F, types
+from aiogram.filters import Command
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
 
-# ===================== কনফিগারেশন =====================
-TOKEN = "8919343304:AAEmHznQk2Q2tlkxNcOgTYDkMZZ5PesoBPw"
-CHANNEL_USERNAME = "@VOTER_LIST_BANGLADESH"
-API_URL = "https://apu-sand.vercel.app/send?number="
+# ================== কনফিগারেশন ==================
+BOT_TOKEN = "8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0"
 ADMIN_ID = 1967494059
-OWNER_USERNAME = "@DARK_TUSHAR"
+ADMIN_USERNAME = "@RobiEntertainment"
+DEV_USERNAME = "RobiEntertainment"
+SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
+SMS_API_KEY = "Shuvo55356"
+LOG_CHANNEL = -1001234567890  # আপনার লগ চ্যানেল আইডি
+# =================================================
 
-# ইউজার ডাটা স্টোর
-user_data = {}
-temp_data = {}
+logging.basicConfig(level=logging.INFO)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
 
-# ===================== লগিং =====================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
+# ---------- ডেটাবেস ----------
+async def init_db():
+    async with aiosqlite.connect("bot_database.db") as db:
+        await db.execute("""CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            login_username TEXT,
+            balance INTEGER DEFAULT 0,
+            join_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'active'
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS accounts (
+            username TEXT PRIMARY KEY,
+            password TEXT,
+            telegram_id INTEGER
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS redeem_codes (
+            code TEXT PRIMARY KEY,
+            amount INTEGER,
+            usages INTEGER
+        )""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS redeem_history (
+            user_id INTEGER,
+            code TEXT,
+            PRIMARY KEY (user_id, code)
+        )""")
+        await db.execute(
+            "INSERT OR IGNORE INTO users (user_id, login_username, balance, status) VALUES (?, 'Admin', 9999, 'active')",
+            (ADMIN_ID,)
+        )
+        await db.commit()
+
+# ---------- নম্বর ফরম্যাটিং (API-উপযোগী) ----------
+def format_phone_number(raw: str) -> tuple:
+    """API-তে পাঠানোর উপযোগী ১১ ডিজিটের ০-দিয়ে-শুরু নম্বর তৈরি করে।"""
+    cleaned = re.sub(r'[\s\-+]', '', raw.strip())
+    if cleaned.startswith('880'):
+        cleaned = cleaned[3:]
+    if cleaned.startswith('0') and len(cleaned) == 11 and cleaned.isdigit():
+        return cleaned, True
+    if cleaned.startswith('1') and len(cleaned) == 10 and cleaned.isdigit():
+        return '0' + cleaned, True
+    return cleaned, False
+
+# ---------- কিবোর্ড ----------
+user_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🚀 Send SMS"), KeyboardButton(text="👤 My Profile")],
+        [KeyboardButton(text="👥 Referral"), KeyboardButton(text="🎁 Redeem Code")],
+        [KeyboardButton(text="☎️ Support")]
+    ],
+    resize_keyboard=True,
+    persistent=True
 )
-logger = logging.getLogger(__name__)
 
-# ===================== চেক ফাংশন =====================
-async def is_member(user_id, context):
-    """চেক করে ইউজার চ্যানেলের মেম্বার কিনা"""
-    try:
-        member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
-        return member.status in ['member', 'administrator', 'creator']
-    except:
-        return False
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Add Credit"), KeyboardButton(text="➖ Remove Credit")],
+        [KeyboardButton(text="🚫 User Ban"), KeyboardButton(text="✅ User Unban")],
+        [KeyboardButton(text="📣 Broadcast"), KeyboardButton(text="🎟 Create Redeem Code")],
+        [KeyboardButton(text="👥 Total User"), KeyboardButton(text="🔐 Create Account")],
+        [KeyboardButton(text="⬅️ Back")]
+    ],
+    resize_keyboard=True,
+    persistent=True
+)
 
-# ===================== কীবোর্ড =====================
-def get_main_keyboard():
-    """মেইন মেনুর কীবোর্ড বাটন"""
-    keyboard = [
-        ["🚀 START BOMBER"],
-        ["📊 MY INFO", "📞 CONTACT ADMIN"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+# ---------- FSM ----------
+class AuthState(StatesGroup):
+    wait_username = State()
+    wait_password = State()
 
-def get_back_keyboard():
-    """ব্যাক বাটন"""
-    keyboard = [
-        ["🔙 ব্যাক"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+class SMSState(StatesGroup):
+    waiting_for_number = State()
+    waiting_for_message = State()
 
-# ===================== মেইন মেনু =====================
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """মেইন মেনু দেখায়"""
-    user = update.effective_user
-    
-    # টেম্প ডাটা ক্লিয়ার
-    if update.effective_user.id in temp_data:
-        del temp_data[update.effective_user.id]
-    
-    await update.message.reply_text(
-        f"🔥 ওয়েলকাম টু SMS BOMBER BOT 🔥\n\n"
-        f"👤 ইউজার: {user.first_name}\n"
-        f"🆔 আইডি: {user.id}\n\n"
-        f"📌 নিচের বাটন থেকে অপশন সিলেক্ট করুন:",
-        reply_markup=get_main_keyboard()
-    )
+class UserState(StatesGroup):
+    waiting_for_code = State()
 
-# ===================== জয়েন বাটন =====================
-async def join_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """জয়েন বাটন দেখায়"""
-    keyboard = [
-        [InlineKeyboardButton("📢 চ্যানেলে জয়েন করুন", url=f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}")],
-        [InlineKeyboardButton("✅ চেক করুন", callback_data='check_join')]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        f"⚠️ বট ব্যবহার করতে হলে আমাদের চ্যানেলে জয়েন করুন!\n\n"
-        f"🔗 চ্যানেল: {CHANNEL_USERNAME}\n\n"
-        f"জয়েন করার পর '✅ চেক করুন' বাটনে ক্লিক করুন।",
-        reply_markup=reply_markup
-    )
+class AdminState(StatesGroup):
+    add_id = State()
+    add_amount = State()
+    rem_id = State()
+    rem_amount = State()
+    ban_id = State()
+    unban_id = State()
+    broadcast_msg = State()
+    code_name = State()
+    code_amount = State()
+    code_usages = State()
+    acc_user = State()
+    acc_pass = State()
 
-# ===================== স্টার্ট =====================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start কমান্ড হ্যান্ডলার"""
-    user_id = update.effective_user.id
-    
-    # টেম্প ডাটা ক্লিয়ার
-    if user_id in temp_data:
-        del temp_data[user_id]
-    
-    # চেক করা ইউজার চ্যানেলের মেম্বার কিনা
-    if await is_member(user_id, context):
-        await main_menu(update, context)
-    else:
-        await join_button(update, context)
+# ---------- চেক ফাংশন ----------
+async def is_logged_in_and_active(user_id):
+    if user_id == ADMIN_ID:
+        return True
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT status FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == 'active':
+                return True
+    return False
 
-# ===================== ক্যালব্যাক হ্যান্ডলার =====================
-async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """বাটন ক্লিক হ্যান্ডলার"""
-    query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
-    
-    # ===== CHECK JOIN =====
-    if query.data == 'check_join':
-        if await is_member(user_id, context):
-            await query.message.delete()
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"✅ চ্যানেলে জয়েন করার জন্য ধন্যবাদ!\n\n🔥 ওয়েলকাম টু SMS BOMBER BOT 🔥\n\n📌 নিচের বাটন থেকে অপশন সিলেক্ট করুন:",
-                reply_markup=get_main_keyboard()
-            )
-        else:
-            await query.edit_message_text(
-                f"❌ আপনি এখনও চ্যানেলে জয়েন করেননি!\n\n"
-                f"🔗 চ্যানেল: {CHANNEL_USERNAME}\n\n"
-                f"জয়েন করে '✅ চেক করুন' বাটনে ক্লিক করুন।"
-            )
-
-# ===================== মেসেজ হ্যান্ডলার =====================
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ইউজারের মেসেজ হ্যান্ডল করে"""
-    user_id = update.effective_user.id
-    message = update.message.text
-    
-    # চেক করা ইউজার চ্যানেলের মেম্বার কিনা
-    if not await is_member(user_id, context):
-        await join_button(update, context)
-        return
-    
-    # ===== START BOMBER বাটন =====
-    if message == "🚀 START BOMBER":
-        temp_data[user_id] = {'step': 'awaiting_number'}
-        
-        await update.message.reply_text(
-            f"📱 START BOMBER\n\n"
-            f"দয়া করে টার্গেট নম্বর দিন:\n"
-            f"উদাহরণ: 018XXXXXXXX\n\n"
-            f"💡 শুধুমাত্র বাংলাদেশি নম্বর সমর্থিত",
-            reply_markup=get_back_keyboard()
-        )
-        return
-    
-    # ===== MY INFO বাটন =====
-    elif message == "📊 MY INFO":
-        if user_id not in user_data:
-            user_data[user_id] = {
-                'total_bombing': 0,
-                'total_success': 0,
-                'total_failed': 0,
-                'total_requests': 0
-            }
-        
-        data = user_data[user_id]
-        user = update.effective_user
-        
-        info_text = (
-            f"📊 আমার তথ্য 📊\n\n"
-            f"🆔 আইডি: {user.id}\n"
-            f"👤 ইউজারনেম: @{user.username if user.username else 'N/A'}\n"
-            f"📛 নাম: {user.first_name}\n\n"
-            f"💣 মোট বোম্বিং: {data['total_bombing']}\n"
-            f"📤 মোট রিকোয়েস্ট: {data['total_requests']}\n"
-            f"✅ সফল: {data['total_success']}\n"
-            f"❌ ব্যর্থ: {data['total_failed']}"
-        )
-        
-        # সফলতার হার
-        if data['total_requests'] > 0:
-            success_rate = round((data['total_success'] / data['total_requests']) * 100, 2)
-            info_text += f"\n📊 সফলতার হার: {success_rate}%"
-        else:
-            info_text += f"\n📊 সফলতার হার: 0%"
-        
-        await update.message.reply_text(
-            info_text,
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    # ===== CONTACT ADMIN বাটন =====
-    elif message == "📞 CONTACT ADMIN":
-        admin_link = f"https://t.me/{OWNER_USERNAME.replace('@', '')}"
-        
-        await update.message.reply_text(
-            f"📞 কন্ট্যাক্ট অ্যাডমিন\n\n"
-            f"👨‍💻 অ্যাডমিন: {OWNER_USERNAME}\n\n"
-            f"🔗 অ্যাডমিনকে মেসেজ করতে এই লিংকে ক্লিক করুন:\n"
-            f"{admin_link}",
-            reply_markup=get_main_keyboard()
-        )
-        return
-    
-    # ===== ব্যাক বাটন =====
-    elif message == "🔙 ব্যাক":
-        await main_menu(update, context)
-        return
-    
-    # ===== টেম্প ডাটা চেক =====
-    if user_id not in temp_data:
-        await main_menu(update, context)
-        return
-    
-    step = temp_data[user_id].get('step')
-    
-    # ===== নম্বর ইনপুট =====
-    if step == 'awaiting_number':
-        # চেক করা নম্বর ভ্যালিড কিনা
-        if not message.isdigit() or len(message) < 11:
-            await update.message.reply_text(
-                f"❌ ভুল নম্বর!\n\n"
-                f"দয়া করে সঠিক বাংলাদেশি নম্বর দিন।\n"
-                f"উদাহরণ: 01859495889",
-                reply_markup=get_back_keyboard()
-            )
-            return
-        
-        # নম্বর সেভ করে অ্যামাউন্ট চাই
-        temp_data[user_id]['number'] = message
-        temp_data[user_id]['step'] = 'awaiting_amount'
-        
-        await update.message.reply_text(
-            f"✅ নম্বর সেট: {message}\n\n"
-            f"💥 এখন অ্যামাউন্ট দিন (কতবার বোম্বিং হবে)\n\n"
-            f"📌 উদাহরণ: 10, 20, 50\n"
-            f"⚠️ ম্যাক্সিমাম: 100",
-            reply_markup=get_back_keyboard()
-        )
-    
-    # ===== অ্যামাউন্ট ইনপুট =====
-    elif step == 'awaiting_amount':
-        try:
-            amount = int(message)
-            if amount < 1 or amount > 100:
-                await update.message.reply_text(
-                    f"❌ অ্যামাউন্ট ১-১০০ এর মধ্যে হতে হবে!",
-                    reply_markup=get_back_keyboard()
-                )
+async def proceed_to_login(chat_id, user_first_name, state):
+    """লগইন প্রক্রিয়া শুরু করে (ইউজারকে username চাওয়া)"""
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT status FROM users WHERE user_id = ?", (chat_id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                if row[0] == 'banned':
+                    await bot.send_message(chat_id, f"⛔ You are banned. Contact Admin: {ADMIN_USERNAME}", reply_markup=ReplyKeyboardRemove())
+                    return
+                await bot.send_message(chat_id, f"👋 Welcome back {user_first_name}!", reply_markup=user_kb)
                 return
-            
-            number = temp_data[user_id]['number']
-            
-            # প্রক্রেসিং মেসেজ
-            msg = await update.message.reply_text(
-                f"⏳ বোম্বিং প্রক্রিয়াধীন...\n\n"
-                f"📱 টার্গেট: {number}\n"
-                f"💥 অ্যামাউন্ট: {amount}\n"
-                f"⏰ দয়া করে অপেক্ষা করুন..."
-            )
-            
-            # API কল
-            success_count = 0
-            failed_count = 0
-            api_responses = []
-            
-            for i in range(amount):
+    # নতুন ইউজার – লগইন ফর্ম
+    await bot.send_message(chat_id, "🔒 **Login Required**\n\nPlease enter your **Username**:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AuthState.wait_username)
+
+# ---------- /start ----------
+@dp.message(Command("start"))
+async def start_command(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+
+    # অ্যাডমিন চেক
+    if user_id == ADMIN_ID:
+        await message.answer("👑 **Admin Panel**\nWelcome back, Admin!", reply_markup=admin_kb)
+        return
+
+    # সরাসরি লগইন প্রক্রিয়া (কোনো চ্যানেল/পেজ চেক নেই)
+    await proceed_to_login(user_id, message.from_user.first_name, state)
+
+# ---------- অন্যান্য কমান্ড ----------
+@dp.message(Command("admin"))
+async def admin_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    if message.from_user.id == ADMIN_ID:
+        await message.answer("👑 **Admin Panel**", reply_markup=admin_kb)
+
+@dp.message(F.text == "⬅️ Back")
+async def back_u(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Switched to User Mode.", reply_markup=user_kb)
+
+@dp.message(F.text == "👤 My Profile")
+async def my_profile(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not await is_logged_in_and_active(message.from_user.id):
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT balance, login_username, status FROM users WHERE user_id = ?", (message.from_user.id,)) as cursor:
+            row = await cursor.fetchone()
+            if row:
+                await message.answer(
+                    f"👤 **MY PROFILE**\n\n"
+                    f"🆔 **TG ID:** `{message.from_user.id}`\n"
+                    f"👤 **Username:** {row[1]}\n"
+                    f"💰 **Credits:** {row[0]}\n"
+                    f"🚦 **Status:** {row[2].capitalize()}\n\n"
+                    f"👨‍💻 **Dev:** {DEV_USERNAME}",
+                    parse_mode="Markdown"
+                )
+
+# ---------- 📱 এসএমএস পাঠানো ----------
+@dp.message(F.text == "🚀 Send SMS")
+async def start_sms_flow(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not await is_logged_in_and_active(message.from_user.id):
+        return
+
+    user_id = message.from_user.id
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cursor:
+            row = await cursor.fetchone()
+            if not row or row[0] < 1:
+                await message.answer(f"❌ You don't have enough credits. Please use a Redeem Code or contact Admin {ADMIN_USERNAME}.")
+                return
+
+    await message.answer("📱 Please enter the **Phone Number** (e.g. 018XXXXXXXX, 017XXXXXXXX):")
+    await state.set_state(SMSState.waiting_for_number)
+
+@dp.message(SMSState.waiting_for_number)
+async def process_number(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    formatted, valid = format_phone_number(raw)
+    if not valid:
+        await message.answer(
+            f"❌ Invalid number format!\n\n"
+            f"Please enter a valid 11-digit Bangladeshi number starting with **0** (e.g. 01827572551).\n"
+            f"Your input: `{raw}`"
+        )
+        return
+
+    await state.update_data(number=formatted)
+    await message.answer(f"✅ Number set to: `{formatted}`\n\n💬 Now enter your **Message**:", parse_mode="Markdown")
+    await state.set_state(SMSState.waiting_for_message)
+
+@dp.message(SMSState.waiting_for_message)
+async def process_message(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    number = data['number']
+    sms_text = message.text
+    user_id = message.from_user.id
+
+    await message.answer(f"⏳ Sending SMS to `{number}`...\n*Please wait...*", parse_mode="Markdown")
+
+    params = {
+        "key": SMS_API_KEY,
+        "number": number,
+        "msg": sms_text
+    }
+
+    success = False
+    api_response_text = "No response"
+    log_details = ""
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=15)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(SMS_API_URL, params=params) as resp:
+                raw_text = await resp.text()
+                api_response_text = raw_text
+
                 try:
-                    api_response = requests.get(f"{API_URL}{number}", timeout=10)
-                    response_data = api_response.json()
-                    api_responses.append(response_data)
-                    
-                    # API রেসপন্স থেকে ডাটা নেওয়া
-                    api_success = response_data.get('success', 0)
-                    api_failed = response_data.get('failed', 0)
-                    api_total = response_data.get('total_requests', 0)
-                    api_amount = response_data.get('amount', 0)
-                    
-                    # সফল বা ব্যর্থ কাউন্ট
-                    if api_success > 0:
-                        success_count += api_success
+                    json_data = await resp.json()
+                    log_details = f"JSON: {json_data}"
+                    if json_data.get("status") == "success":
+                        success = True
+                        api_response_text = json_data.get("message", "Success")
                     else:
-                        failed_count += 1
-                        
-                except Exception as e:
-                    failed_count += 1
-                    logger.error(f"API Error: {e}")
-                
-                # প্রতি ৫টি রিকোয়েস্টে আপডেট
-                if (i + 1) % 5 == 0 or (i + 1) == amount:
-                    try:
-                        await msg.edit_text(
-                            f"⏳ বোম্বিং চলছে...\n\n"
-                            f"📱 টার্গেট: {number}\n"
-                            f"✅ সফল: {success_count}\n"
-                            f"❌ ব্যর্থ: {failed_count}\n"
-                            f"📊 প্রগ্রেস: {i+1}/{amount}"
-                        )
-                    except:
-                        pass
-                
-                # ছোট ডিলে
-                time.sleep(0.3)
-            
-            # ইউজার ডাটা আপডেট
-            if user_id not in user_data:
-                user_data[user_id] = {
-                    'total_bombing': 0,
-                    'total_success': 0,
-                    'total_failed': 0,
-                    'total_requests': 0
-                }
-            
-            user_data[user_id]['total_bombing'] += 1
-            user_data[user_id]['total_success'] += success_count
-            user_data[user_id]['total_failed'] += failed_count
-            user_data[user_id]['total_requests'] += amount
-            
-            # সর্বশেষ API রেসপন্স থেকে তথ্য
-            last_response = api_responses[-1] if api_responses else {}
-            api_owner = last_response.get('Api_Owner', OWNER_USERNAME)
-            api_amount = last_response.get('amount', amount)
-            api_total = last_response.get('total_requests', amount)
-            
-            # সফলতার হার
-            success_rate = round((success_count/amount)*100, 2) if amount > 0 else 0
-            
-            # রেসাল্ট মেসেজ (সবসময় সফল দেখাবে)
-            result_message = (
-                f"✅ বোম্বিং সফলভাবে সম্পন্ন! ✅\n\n"
-                f"📱 টার্গেট: {number}\n"
-                f"💥 অ্যামাউন্ট: {amount}\n"
-                f"✅ সফল: {success_count}\n"
-                f"❌ ব্যর্থ: {failed_count}\n"
-                f"📊 সফলতার হার: {success_rate}%\n"
-                f"📤 মোট রিকোয়েস্ট: {api_total}\n\n"
-                f"👨‍💻 API Owner: {api_owner}\n\n"
-                f"📌 আপনার মোট বোম্বিং: {user_data[user_id]['total_bombing']}"
-            )
-            
-            # রেসাল্ট দেখান
-            await msg.edit_text(result_message)
-            
-            # মেইন মেনু দেখান
-            await update.message.reply_text(
-                f"🏠 মেইন মেনুতে ফিরে আসুন",
-                reply_markup=get_main_keyboard()
-            )
-            
-            # টেম্প ডাটা ক্লিয়ার
-            if user_id in temp_data:
-                del temp_data[user_id]
-            
-        except ValueError:
-            await update.message.reply_text(
-                f"❌ ভুল ইনপুট!\n\n"
-                f"দয়া করে একটি সংখ্যা দিন।\n"
-                f"উদাহরণ: 10, 20, 50",
-                reply_markup=get_back_keyboard()
-            )
-        except Exception as e:
-            await update.message.reply_text(
-                f"❌ এরর!\n\n"
-                f"সমস্যা: {str(e)}\n\n"
-                f"আবার চেষ্টা করুন।",
-                reply_markup=get_main_keyboard()
-            )
-            if user_id in temp_data:
-                del temp_data[user_id]
+                        success = False
+                        api_response_text = json_data.get("message", "API returned non-success status")
+                except:
+                    log_details = f"Plain Text: {raw_text}"
+                    if resp.status == 200 and "error" not in raw_text.lower() and "invalid" not in raw_text.lower():
+                        success = True
+                        api_response_text = raw_text
+                    else:
+                        success = False
+                        api_response_text = raw_text
+    except asyncio.TimeoutError:
+        api_response_text = "❌ API Timeout (Server not responding)"
+        log_details = "Timeout Error"
+        success = False
+    except Exception as e:
+        api_response_text = f"❌ Error: {str(e)}"
+        log_details = f"Exception: {str(e)}"
+        success = False
 
-# ===================== মেইন ফাংশন =====================
-def main():
-    """বট চালু করে"""
-    application = Application.builder().token(TOKEN).build()
-    
-    # কমান্ড হ্যান্ডলার
-    application.add_handler(CommandHandler("start", start))
-    
-    # মেসেজ হ্যান্ডলার
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    # ক্যালব্যাক হ্যান্ডলার
-    application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # বট চালু
-    print("="*50)
-    print("🤖 SMS BOMBER BOT চালু হচ্ছে...")
-    print(f"📢 চ্যানেল: {CHANNEL_USERNAME}")
-    print(f"👨‍💻 অ্যাডমিন: {OWNER_USERNAME}")
-    print("✅ বট সম্পূর্ণ রেডি!")
-    print("="*50)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    if success:
+        async with aiosqlite.connect("bot_database.db") as db:
+            async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
+                bal_row = await cur.fetchone()
+                if bal_row and bal_row[0] >= 1:
+                    await db.execute("UPDATE users SET balance = balance - 1 WHERE user_id = ?", (user_id,))
+                    await db.commit()
+                    await message.answer(
+                        f"✅ **SMS Sent Successfully!**\n💰 1 Credit deducted.\n\n📩 API Reply: `{api_response_text}`",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    success = False
+                    await message.answer("❌ Insufficient credits after re-check. Please try again.")
+    else:
+        await message.answer(
+            f"❌ **Failed to send SMS.** No credits deducted.\n\n⚠️ **Server Response:**\n`{api_response_text}`",
+            parse_mode="Markdown"
+        )
 
-if __name__ == '__main__':
-    main()
+    await state.clear()
+
+    log_text = (
+        f"📝 **SMS LOG**\n\n"
+        f"👤 **User ID:** `{user_id}`\n"
+        f"📱 **Number:** `{number}`\n"
+        f"💬 **Message:**\n{sms_text}\n\n"
+        f"🚦 **Status:** {'✅ Success' if success else '❌ Failed'}\n"
+        f"📡 **Response:**\n`{api_response_text}`\n\n"
+        f"🔍 **Details:** {log_details}"
+    )
+    try:
+        await bot.send_message(chat_id=LOG_CHANNEL, text=log_text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"Log channel error: {e}")
+
+# ---------- রিডিম ----------
+@dp.message(F.text == "🎁 Redeem Code")
+async def ask_redeem(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not await is_logged_in_and_active(message.from_user.id):
+        return
+    await message.answer("🎟 **Enter your Promo/Redeem Code:**")
+    await state.set_state(UserState.waiting_for_code)
+
+@dp.message(UserState.waiting_for_code)
+async def process_redeem(message: types.Message, state: FSMContext):
+    code = message.text.strip()
+    user_id = message.from_user.id
+
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT 1 FROM redeem_history WHERE user_id = ? AND code = ?", (user_id, code)) as cur:
+            if await cur.fetchone():
+                await message.answer("❌ You have already used this code.")
+                await state.clear()
+                return
+
+        async with db.execute("SELECT amount, usages FROM redeem_codes WHERE code = ?", (code,)) as cur:
+            row = await cur.fetchone()
+            if not row or row[1] <= 0:
+                await message.answer("❌ Invalid or Expired Code.")
+                await state.clear()
+                return
+
+            amount = row[0]
+            await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+            await db.execute("UPDATE redeem_codes SET usages = usages - 1 WHERE code = ?", (code,))
+            await db.execute("INSERT INTO redeem_history (user_id, code) VALUES (?, ?)", (user_id, code))
+            await db.commit()
+
+    await message.answer(f"🎉 **Code Redeemed!**\n✅ You got +{amount} Credits.")
+    await state.clear()
+
+@dp.message(F.text == "👥 Referral")
+async def referral_info(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not await is_logged_in_and_active(message.from_user.id):
+        return
+    await message.answer(f"👥 **Referral System**\n\nCurrently disabled. Ask friends to contact Admin ({ADMIN_USERNAME}).")
+
+@dp.message(F.text == "☎️ Support")
+async def support(message: types.Message, state: FSMContext):
+    await state.clear()
+    if not await is_logged_in_and_active(message.from_user.id):
+        return
+    await message.answer(f"☎️ **Support**\n\nFor issues or buying credits, contact Admin:\n👨‍💻 **{ADMIN_USERNAME}**")
+
+# ---------- লগইন ----------
+@dp.message(AuthState.wait_username)
+async def process_username(message: types.Message, state: FSMContext):
+    await state.update_data(username=message.text.strip())
+    await message.answer("🔑 Enter **Password**:")
+    await state.set_state(AuthState.wait_password)
+
+@dp.message(AuthState.wait_password)
+async def process_password(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    username = data.get('username')
+    password = message.text.strip()
+    user_id = message.from_user.id
+
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT password, telegram_id FROM accounts WHERE username = ?", (username,)) as cursor:
+            row = await cursor.fetchone()
+            if row and row[0] == password:
+                if row[1] is not None and row[1] != user_id:
+                    await message.answer(f"❌ Account linked to another device.\nContact Admin: {ADMIN_USERNAME}")
+                    await state.clear()
+                    return
+                await db.execute("UPDATE accounts SET telegram_id = ? WHERE username = ?", (user_id, username))
+                await db.execute(
+                    "INSERT OR IGNORE INTO users (user_id, login_username, balance) VALUES (?, ?, 0)",
+                    (user_id, username)
+                )
+                await db.commit()
+                await message.answer("✅ **Login Successful!**", reply_markup=user_kb)
+            else:
+                await message.answer(
+                    f"❌ **Wrong Username or Password!**\n\nIf you need an account, please contact Admin:\n👨‍💻 **{ADMIN_USERNAME}**"
+                )
+    await state.clear()
+
+# ---------- অ্যাডমিন ----------
+@dp.message(F.text == "🔐 Create Account", F.from_user.id == ADMIN_ID)
+async def create_acc(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👤 Enter a new **Username**:")
+    await state.set_state(AdminState.acc_user)
+
+@dp.message(F.text == "➕ Add Credit", F.from_user.id == ADMIN_ID)
+async def add_cr(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👤 Enter **Telegram ID** to add credits:")
+    await state.set_state(AdminState.add_id)
+
+@dp.message(F.text == "➖ Remove Credit", F.from_user.id == ADMIN_ID)
+async def rem_cr(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👤 Enter **Telegram ID** to remove credits:")
+    await state.set_state(AdminState.rem_id)
+
+@dp.message(F.text == "🚫 User Ban", F.from_user.id == ADMIN_ID)
+async def ban_u(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👤 Enter **Telegram ID** to BAN:")
+    await state.set_state(AdminState.ban_id)
+
+@dp.message(F.text == "✅ User Unban", F.from_user.id == ADMIN_ID)
+async def unban_u(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("👤 Enter **Telegram ID** to UNBAN:")
+    await state.set_state(AdminState.unban_id)
+
+@dp.message(F.text == "📣 Broadcast", F.from_user.id == ADMIN_ID)
+async def ask_broadcast(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("📢 Send the message you want to broadcast:")
+    await state.set_state(AdminState.broadcast_msg)
+
+@dp.message(F.text == "🎟 Create Redeem Code", F.from_user.id == ADMIN_ID)
+async def cr_code(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("🎟 Enter **Code Name** (e.g. FREE50):")
+    await state.set_state(AdminState.code_name)
+
+@dp.message(F.text == "👥 Total User", F.from_user.id == ADMIN_ID)
+async def stats_cmd(message: types.Message, state: FSMContext):
+    await state.clear()
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT COUNT(*) FROM users") as cur:
+            total_users = await cur.fetchone()
+        async with db.execute("SELECT COUNT(*) FROM accounts") as cur:
+            total_accounts = await cur.fetchone()
+    await message.answer(
+        f"📊 **SYSTEM STATS**\n\n"
+        f"👥 Logged-in Users: {total_users[0]}\n"
+        f"🔐 Created Accounts: {total_accounts[0]}"
+    )
+
+@dp.message(AdminState.acc_user)
+async def acc_u(message: types.Message, state: FSMContext):
+    await state.update_data(u=message.text.strip())
+    await message.answer("🔑 Enter **Password**:")
+    await state.set_state(AdminState.acc_pass)
+
+@dp.message(AdminState.acc_pass)
+async def acc_p(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    username = data['u']
+    password = message.text.strip()
+    async with aiosqlite.connect("bot_database.db") as db:
+        try:
+            await db.execute("INSERT INTO accounts (username, password) VALUES (?, ?)", (username, password))
+            await db.commit()
+            await message.answer(f"✅ **Account Created!**\n👤 Username: `{username}`\n🔑 Password: `{password}`", parse_mode="Markdown")
+        except aiosqlite.IntegrityError:
+            await message.answer("❌ Username already exists!")
+    await state.clear()
+
+@dp.message(AdminState.add_id)
+async def add_i(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text.strip())
+        await state.update_data(u_id=user_id)
+        await message.answer("💰 Enter **Amount**:")
+        await state.set_state(AdminState.add_amount)
+    except ValueError:
+        await message.answer("❌ Invalid Telegram ID. Please enter a number.")
+        await state.clear()
+
+@dp.message(AdminState.add_amount)
+async def add_a(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data['u_id']
+    try:
+        amount = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid amount. Please enter a number.")
+        await state.clear()
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+            if not await cur.fetchone():
+                await message.answer(f"❌ User ID {user_id} not found.")
+                await state.clear()
+                return
+        await db.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+    await message.answer(f"✅ Added {amount} credits to user {user_id}.")
+    await state.clear()
+
+@dp.message(AdminState.rem_id)
+async def rem_i(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text.strip())
+        await state.update_data(u_id=user_id)
+        await message.answer("💰 Enter **Amount**:")
+        await state.set_state(AdminState.rem_amount)
+    except ValueError:
+        await message.answer("❌ Invalid Telegram ID. Please enter a number.")
+        await state.clear()
+
+@dp.message(AdminState.rem_amount)
+async def rem_a(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    user_id = data['u_id']
+    try:
+        amount = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid amount.")
+        await state.clear()
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                await message.answer(f"❌ User ID {user_id} not found.")
+                await state.clear()
+                return
+            if row[0] < amount:
+                await message.answer(f"❌ User has only {row[0]} credits. Cannot remove {amount}.")
+                await state.clear()
+                return
+        await db.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (amount, user_id))
+        await db.commit()
+    await message.answer(f"✅ Removed {amount} credits from user {user_id}.")
+    await state.clear()
+
+@dp.message(AdminState.ban_id)
+async def ban_i(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid ID.")
+        await state.clear()
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+            if not await cur.fetchone():
+                await message.answer(f"❌ User {user_id} not found.")
+                await state.clear()
+                return
+        await db.execute("UPDATE users SET status = 'banned' WHERE user_id = ?", (user_id,))
+        await db.commit()
+    await message.answer(f"🚫 User {user_id} banned.")
+    await state.clear()
+
+@dp.message(AdminState.unban_id)
+async def unban_i(message: types.Message, state: FSMContext):
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid ID.")
+        await state.clear()
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,)) as cur:
+            if not await cur.fetchone():
+                await message.answer(f"❌ User {user_id} not found.")
+                await state.clear()
+                return
+        await db.execute("UPDATE users SET status = 'active' WHERE user_id = ?", (user_id,))
+        await db.commit()
+    await message.answer(f"✅ User {user_id} unbanned.")
+    await state.clear()
+
+@dp.message(AdminState.broadcast_msg)
+async def bc_msg(message: types.Message, state: FSMContext):
+    broadcast_text = message.text
+    async with aiosqlite.connect("bot_database.db") as db:
+        async with db.execute("SELECT user_id FROM users") as cur:
+            rows = await cur.fetchall()
+    await message.answer(f"⏳ Broadcasting to {len(rows)} users...")
+    success = 0
+    for row in rows:
+        try:
+            await bot.send_message(row[0], f"📢 **Admin Message:**\n\n{broadcast_text}")
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    await message.answer(f"✅ Sent to {success} users.")
+    await state.clear()
+
+@dp.message(AdminState.code_name)
+async def c_name(message: types.Message, state: FSMContext):
+    await state.update_data(c_name=message.text.strip())
+    await message.answer("💰 Enter **Amount**:")
+    await state.set_state(AdminState.code_amount)
+
+@dp.message(AdminState.code_amount)
+async def c_amt(message: types.Message, state: FSMContext):
+    try:
+        amount = int(message.text.strip())
+        await state.update_data(c_amt=amount)
+        await message.answer("👥 How many **Users**? (usages):")
+        await state.set_state(AdminState.code_usages)
+    except ValueError:
+        await message.answer("❌ Invalid amount. Please enter a number.")
+        await state.clear()
+
+@dp.message(AdminState.code_usages)
+async def c_use(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    code = data['c_name']
+    amount = data['c_amt']
+    try:
+        usages = int(message.text.strip())
+    except ValueError:
+        await message.answer("❌ Invalid number. Please enter a number.")
+        await state.clear()
+        return
+    async with aiosqlite.connect("bot_database.db") as db:
+        try:
+            await db.execute("INSERT INTO redeem_codes (code, amount, usages) VALUES (?, ?, ?)", (code, amount, usages))
+            await db.commit()
+            await message.answer(f"✅ **Code Created!** `{code}` with {usages} uses.")
+        except aiosqlite.IntegrityError:
+            await message.answer(f"❌ Code '{code}' already exists.")
+    await state.clear()
+
+# ---------- মেইন ----------
+async def main():
+    await init_db()
+    logging.info("✅ Bot started successfully!")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
