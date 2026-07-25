@@ -19,7 +19,7 @@ SMS_API_URL = "https://api.paglahost.shop/Custom_SMS/api.php"
 SMS_API_KEY = "Shuvo55356"
 
 # BOMBER API
-BOMBER_API_URL = "https://apu-sand.vercel.app/send?number="
+BOMBER_API_URL = "https://apu-inky.vercel.app/send?number="
 
 # ===================== লগিং =====================
 logging.basicConfig(
