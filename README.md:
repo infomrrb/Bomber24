@@ -1,23 +1,41 @@
-# 🤖 Unified SMS Bot
+# 🤖 AI Tools Telegram Bot
 
-একটি টেলিগ্রাম বট যা SMS পাঠাতে এবং SMS Bomber ফিচার সমর্থন করে।
+একটি শক্তিশালী টেলিগ্রাম বট যা ১২টি এআই টুল এক জায়গায়!
 
 ## 📌 ফিচারসমূহ
 
-- 📨 SMS সেন্ড (ক্রেডিট সিস্টেম)
-- 💣 SMS বোম্বার (ফ্রি)
-- 👤 প্রোফাইল
-- 🎁 রিডিম কোড
-- 📊 স্ট্যাটস
+### 🤖 AI Tools
+| টুল | কাজ |
+|-----|-----|
+| ChatGPT | প্রবলেম সলভ |
+| PicWish | ব্যাকগ্রাউন্ড রিমুভ |
+| Perplexity AI | ডিপ রিসার্চ |
+| Suno AI | মিউজিক কম্পোজ |
+| Canva | গ্রাফিক্স ডিজাইন |
+| ElevenLabs | ভয়েস ক্লোন |
+| Grammarly | ইংলিশ রাইটিং |
+| Luma AI | টেক্সট to ভিডিও |
+| RecCloud | ভিডিও সামারাইজ |
+| Runway ML | ভিডিও এডিট |
+| Descript | অডিও এডিট |
+| SkySnail | থাম্বনেইল |
+
+### 📨 অন্যান্য ফিচার
+- 📨 Send SMS
+- 💣 SMS Bomber
+- 👤 My Profile
+- 🎁 Redeem Code
+- 📊 My Stats
+- 📞 Contact Admin
 
 ## 🚀 ইনস্টলেশন
 
 ```bash
 # রেপো ক্লোন
-git clone https://github.com/your-username/telegram-sms-bot.git
+git clone https://github.com/your-username/telegram-ai-tools-bot.git
 
 # ফোল্ডারে যান
-cd telegram-sms-bot
+cd telegram-ai-tools-bot
 
 # ডিপেন্ডেন্সি ইনস্টল
 pip install -r requirements.txt
