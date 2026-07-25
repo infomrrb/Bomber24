@@ -12,7 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # ================== কনফিগারেশন ==================
-BOT_TOKEN = "8826486988:AAFOOfdcrVCgvj532plzOQUXwx40yn3USl0"
+BOT_TOKEN = "8919343304:AAEmHznQk2Q2tlkxNcOgTYDkMZZ5PesoBPw"
 ADMIN_ID = 1967494059
 ADMIN_USERNAME = "@RobiEntertainment"
 DEV_USERNAME = "RobiEntertainment"
